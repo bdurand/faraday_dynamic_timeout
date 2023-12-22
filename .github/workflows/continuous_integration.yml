@@ -1,0 +1,62 @@
+name: Continuous Integration
+on:
+  push:
+    branches:
+      - main
+      - actions-*
+    tags:
+      - v*
+  pull_request:
+env:
+  BUNDLE_CLEAN: "true"
+  BUNDLE_PATH: vendor/bundle
+  BUNDLE_JOBS: 3
+  BUNDLE_RETRY: 3
+jobs:
+  specs:
+    name: run tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ruby: "ruby"
+            standardrb: true
+          - ruby: "3.2"
+            appraisal: faraday_2
+          - ruby: "2.5"
+            appraisal: faraday_1
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Set up Ruby ${{ matrix.ruby }}
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "${{ matrix.ruby }}"
+      - name: Setup bundler
+        if: matrix.bundler != ''
+        run: |
+          gem uninstall bundler --all
+          gem install bundler --no-document --version ${{ matrix.bundler }}
+      - name: Set Appraisal bundle
+        if: matrix.appraisal != ''
+        run: |
+          echo "using gemfile gemfiles/${{ matrix.appraisal }}.gemfile"
+          bundle config set gemfile "gemfiles/${{ matrix.appraisal }}.gemfile"
+      - name: Install gems
+        run: bundle
+      - name: Run specs
+        run: bundle exec rake spec
+      - name: Run standardrb
+        if: matrix.standardrb == true
+        run: bundle exec rake standard
