@@ -2,9 +2,9 @@
 
 module FaradayDynamicTimeout
   class Counter
-    def initialize(name:, redis:, ttl: 60)
+    def initialize(name:, redis:, ttl: 60.0)
       @ttl = ttl.to_f
-      @ttl = 60 if @ttl <= 0
+      @ttl = 60.0 if @ttl <= 0.0
       @redis = redis
       @key = "FaradayDynamicTimeout:#{name}"
     end
@@ -31,7 +31,7 @@ module FaradayDynamicTimeout
       id ||= SecureRandom.hex
       @redis.multi do |transaction|
         transaction.zadd(@key, Time.now.to_f, id)
-        transaction.pexpire(@key, @ttl * 1000)
+        transaction.pexpire(@key, (@ttl * 1000).round)
       end
       id
     end
