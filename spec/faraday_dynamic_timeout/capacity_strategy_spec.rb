@@ -11,10 +11,18 @@ describe FaradayDynamicTimeout::CapacityStrategy do
 
     # Stub 5 different process ids
     pid = Process.pid
-    allow(Process).to receive(:pid).and_return(pid, pid + 1, pid + 2, pid + 3, pid + 4, pid)
+    expect(strategy.call).to eq([{timeout: 1, limit: 1}])
 
-    2.times { expect(strategy.call).to eq([{timeout: 1, limit: 1}]) }
-    2.times { expect(strategy.call).to eq([{timeout: 1, limit: 2}]) }
+    allow(Process).to receive(:pid).and_return(pid + 1)
+    expect(strategy.call).to eq([{timeout: 1, limit: 1}])
+
+    allow(Process).to receive(:pid).and_return(pid + 2)
+    expect(strategy.call).to eq([{timeout: 1, limit: 2}])
+
+    allow(Process).to receive(:pid).and_return(pid + 3)
+    expect(strategy.call).to eq([{timeout: 1, limit: 2}])
+
+    allow(Process).to receive(:pid).and_return(pid + 4)
     4.times { expect(strategy.call).to eq([{timeout: 1, limit: 3}]) }
   end
 
