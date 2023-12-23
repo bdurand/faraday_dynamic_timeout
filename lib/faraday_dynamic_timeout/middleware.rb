@@ -4,6 +4,12 @@ module FaradayDynamicTimeout
   class Middleware < Faraday::Middleware
     def initialize(*)
       super
+
+      @redis_client = option(:redis)
+      if @redis_client.nil? && !(options.include?(:redis) || options.include?("redis"))
+        @redis_client = Redis.new
+      end
+
       @memoized_buckets = []
       @mutex = Mutex.new
     end
@@ -13,21 +19,30 @@ module FaradayDynamicTimeout
       redis = redis_client
       return app.call(env) if !enabled?(env) || buckets.empty? || redis.nil?
 
-      process_count = count_processes(env.url, redis, buckets)
-      threads_count = total_threads(process_count)
+      error = nil
+      bucket_timeout = nil
+      callback = option(:callback)
+      start_time = monotonic_time if callback
 
-      execute_with_timeout(env.url, buckets, threads_count, redis) do |timeout|
-        set_timeout(env.request, timeout) if timeout
-        app.call(env)
+      count_request(env.url, redis, buckets, callback) do |request_count|
+        execute_with_timeout(env.url, buckets, request_count, redis) do |timeout|
+          bucket_timeout = timeout
+          set_timeout(env.request, timeout) if timeout
+
+          # Resetting the start time to more accurately reflect the time spent in the request.
+          start_time = monotonic_time if callback
+          app.call(env)
+        end
+      rescue => e
+        error = e
+        raise
+      ensure
+        if callback
+          duration = monotonic_time - start_time
+          request_info = RequestInfo.new(env: env, duration: duration, timeout: bucket_timeout, request_count: request_count, error: error)
+          callback.call(request_info)
+        end
       end
-    end
-
-    # Estimate the total number of threads available to all of the processes.
-    # @param process_count [Integer] The number of processes.
-    # @return [Integer] The total number of threads.
-    # @api private
-    def total_threads(process_count)
-      process_count * options.fetch(:threads_per_process, 1).to_i
     end
 
     private
@@ -36,7 +51,7 @@ module FaradayDynamicTimeout
     # @return [Array<Bucket>] The sorted buckets.
     # @api private
     def sorted_buckets
-      config = options[:buckets]
+      config = option(:buckets)
       config = config.call if config.respond_to?(:call)
       config = Array(config)
       memoized_config, memoized_buckets = @memoized_buckets
@@ -52,7 +67,7 @@ module FaradayDynamicTimeout
     end
 
     def enabled?(env)
-      filter = options[:filter]
+      filter = option(:filter)
       if filter
         filter.call(env)
       else
@@ -60,20 +75,27 @@ module FaradayDynamicTimeout
       end
     end
 
-    def execute_with_timeout(uri, buckets, threads_count, redis)
+    def execute_with_timeout(uri, buckets, request_count, redis)
       buckets = buckets.dup
+      total_requests = 0
+
       while (bucket = buckets.pop)
         if bucket.no_limit?
           retval = yield(bucket.timeout)
           break
         else
-          limit = [bucket.limit, (bucket.capacity * threads_count).round].max
-          restrainer = Restrainer.new(restrainer_name(uri, bucket.timeout), limit: limit, timeout: bucket.timeout, redis: redis)
+          restrainer = Restrainer.new(restrainer_name(uri, bucket.timeout), limit: bucket.limit, timeout: bucket.timeout, redis: redis)
           begin
             retval = restrainer.throttle { yield(bucket.timeout) }
             break
           rescue Restrainer::ThrottledError
-            raise if buckets.empty?
+            total_requests += bucket.limit
+            if buckets.empty?
+              # Since request_count is a snapshot before the request was started it is subject to
+              # race conditions, so we'll make sure to report a higher number if we calculated one.
+              request_count = [request_count, total_requests + 1].max
+              raise ThrottledError.new("Request to #{base_url(uri)} aborted due to #{request_count} concurrent requests", request_count: request_count)
+            end
           end
         end
       end
@@ -88,16 +110,22 @@ module FaradayDynamicTimeout
       request.read_timeout = nil
     end
 
-    def count_processes(uri, redis, buckets)
-      process_ttl = buckets.last.timeout
-      process_ttl = 60 if process_ttl <= 0
-      process_counter = Counter.new(name: process_counter_name(uri), redis: redis, ttl: process_ttl)
-      process_counter.track!(process_id)
-      process_counter.value
+    # Track how many requests are currently being executed only if a callback has been configured.
+    def count_request(uri, redis, buckets, callback)
+      if callback
+        ttl = buckets.last.timeout
+        ttl = 60 if ttl <= 0
+        request_counter = Counter.new(name: request_counter_name(uri), redis: redis, ttl: ttl)
+        request_counter.execute do
+          yield request_counter.value
+        end
+      else
+        yield 1
+      end
     end
 
-    def process_counter_name(uri)
-      "#{redis_key_namespace(uri)}.processes"
+    def request_counter_name(uri)
+      "#{redis_key_namespace(uri)}.requests"
     end
 
     def restrainer_name(uri, timeout)
@@ -105,25 +133,29 @@ module FaradayDynamicTimeout
     end
 
     def redis_key_namespace(uri)
-      name = options[:name].to_s
-      if name.empty?
-        name = uri.host.downcase
-        name = "#{name}:#{uri.port}" if uri.port != uri.default_port
-      end
+      name = option(:name).to_s
+      name = base_url(uri) if name.empty?
       "FaradayDynamicTimeout:#{name}"
     end
 
-    def process_id
-      "#{Socket.gethostname}:#{Process.pid}"
+    def base_url(uri)
+      url = "#{uri.scheme}://#{uri.host.downcase}"
+      url = "#{url}:#{uri.port}" unless uri.port == uri.default_port
+      url
     end
 
     def redis_client
-      redis = options[:redis]
+      redis = option(:redis) || @redis_client
       redis = redis.call if redis.is_a?(Proc)
-      if redis.nil? && !options.include?(:redis)
-        redis = Restrainer.redis
-      end
       redis
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def option(key)
+      options[key] || options[key.to_s]
     end
   end
 end

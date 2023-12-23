@@ -19,17 +19,12 @@ module FaradayDynamicTimeout
     end
 
     def value
-      min_score = Time.now.to_f - @ttl
-      active_count, total_count = @redis.multi do |transaction|
-        transaction.zcount(@key, min_score, "+inf")
+      total_count, expired_count = @redis.multi do |transaction|
         transaction.zcard(@key)
+        transaction.zremrangebyscore(@key, "-inf", Time.now.to_f - @ttl)
       end
 
-      if active_count != total_count
-        @redis.zremrangebyscore(@key, "-inf", Time.now.to_f - @ttl)
-      end
-
-      active_count
+      total_count - expired_count
     end
 
     def track!(id = nil)

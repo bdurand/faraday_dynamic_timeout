@@ -25,7 +25,7 @@ describe FaradayDynamicTimeout::Middleware do
       faraday.options.open_timeout = default_timeouts[:open_timeout]
       faraday.options.read_timeout = default_timeouts[:read_timeout]
       faraday.options.write_timeout = default_timeouts[:write_timeout]
-      faraday.request :dynamic_timeout, {redis: Restrainer.redis}.merge(options)
+      faraday.use :dynamic_timeout, {redis: REDIS}.merge(options)
     end
   end
 
@@ -56,56 +56,6 @@ describe FaradayDynamicTimeout::Middleware do
       sleep 0.1
 
       response = connection(buckets: buckets).get(url)
-      request = response.env.request
-      expect(request.timeout).to eq(0.2)
-
-      thread.value
-    end
-
-    it "picks the higher of limit or capacity" do
-      stub_request(:get, url)
-        .to_return do
-          sleep 0.2
-          {status: 200}
-        end
-        .to_return(status: 200)
-
-      buckets = [
-        {timeout: 0.3, limit: 1, capacity: 0.1},
-        {timeout: 0.2, limit: 2, capacity: 0.2}
-      ]
-      thread = Thread.new { connection(buckets: buckets).get(url) }
-      sleep 0.1
-
-      response = connection(buckets: buckets).get(url)
-      request = response.env.request
-      expect(request.timeout).to eq(0.2)
-
-      thread.value
-    end
-
-    it "falls back based on total thread capacity" do
-      stub_request(:get, url)
-        .to_return(status: 200)
-        .to_return do
-          sleep 0.2
-          {status: 200}
-        end
-        .to_return(status: 200)
-
-      buckets = [
-        {timeout: 0.3, capacity: 0.5},
-        {timeout: 0.2, capacity: 0.5}
-      ]
-      faraday = connection(buckets: buckets)
-
-      faraday.get(url)
-
-      allow(Process).to receive(:pid).and_return(0)
-      thread = Thread.new { faraday.get(url) }
-      sleep 0.1
-
-      response = faraday.get(url)
       request = response.env.request
       expect(request.timeout).to eq(0.2)
 
@@ -146,13 +96,6 @@ describe FaradayDynamicTimeout::Middleware do
       expect(request.timeout).to eq(1)
     end
 
-    it "will always use a timeout if the bucket has a 100% capacity" do
-      stub_request(:get, url)
-      response = connection(buckets: [{timeout: 1, capacity: 1.0}]).get(url)
-      request = response.env.request
-      expect(request.timeout).to eq(1)
-    end
-
     it "does not set a timeout if there are no buckets" do
       stub_request(:get, url)
       response = connection(buckets: []).get(url)
@@ -179,11 +122,19 @@ describe FaradayDynamicTimeout::Middleware do
       expect(request.timeout).to eq(default_timeouts[:timeout])
     end
 
+    it "uses a default redis connection if none is provided" do
+      stub_request(:get, url)
+      connection = Faraday.new { |faraday| faraday.use :dynamic_timeout, {buckets: buckets} }
+      response = connection.get(url)
+      request = response.env.request
+      expect(request.timeout).to eq(0.3)
+    end
+
     it "can pass the redis connection as a proc" do
       proc_called = false
       redis_proc = lambda do
         proc_called = true
-        Restrainer.redis
+        REDIS
       end
       stub_request(:get, url)
       response = connection(buckets: buckets, redis: redis_proc).get(url)
@@ -200,18 +151,6 @@ describe FaradayDynamicTimeout::Middleware do
     end
   end
 
-  describe "total_threads" do
-    it "will assume there is only one thread per process" do
-      middleware = FaradayDynamicTimeout::Middleware.new(nil)
-      expect(middleware.total_threads(10)).to eq(10)
-    end
-
-    it "will scale out the capacity based on the number of threads per process" do
-      middleware = FaradayDynamicTimeout::Middleware.new(nil, threads_per_process: 2)
-      expect(middleware.total_threads(10)).to eq(20)
-    end
-  end
-
   describe "memoized buckets" do
     it "memoizes the buckets" do
       buckets = [{timeout: 0.2, limit: 1}]
@@ -222,6 +161,55 @@ describe FaradayDynamicTimeout::Middleware do
       new_sorted_buckets = middleware.send(:sorted_buckets)
       expect(new_sorted_buckets.object_id).to_not eq(sorted_buckets.object_id)
       expect(new_sorted_buckets.last).to eq(sorted_buckets.last)
+    end
+  end
+
+  describe "callback" do
+    it "calls the callback with the request info on success" do
+      stub_request(:get, url)
+
+      request_info = nil
+      callback_proc = ->(info) { request_info = info }
+      connection(buckets: buckets, callback: callback_proc).get(url)
+
+      expect(request_info).to be_a(FaradayDynamicTimeout::RequestInfo)
+      expect(request_info.env.url.to_s).to eq(url)
+      expect(request_info.duration).to be_a(Float)
+      expect(request_info.timeout).to eq(0.3)
+      expect(request_info.request_count).to eq(1)
+      expect(request_info.error).to be_nil
+    end
+
+    it "calls the callback with the request info on failure" do
+      error = StandardError.new("boom")
+      stub_request(:get, url).to_raise(error)
+
+      request_info = nil
+      callback_proc = ->(info) { request_info = info }
+      expect { connection(buckets: buckets, callback: callback_proc).get(url) }.to raise_error(error)
+
+      expect(request_info).to be_a(FaradayDynamicTimeout::RequestInfo)
+      expect(request_info.env.url.to_s).to eq(url)
+      expect(request_info.duration).to be_a(Float)
+      expect(request_info.timeout).to eq(0.3)
+      expect(request_info.request_count).to eq(1)
+      expect(request_info.error).to eq(error)
+    end
+
+    it "calls the callback with the request info on throttle error" do
+      error = Restrainer::ThrottledError.new
+      allow_any_instance_of(Restrainer).to receive(:throttle).and_raise(error)
+
+      request_info = nil
+      callback_proc = ->(info) { request_info = info }
+      expect { connection(buckets: buckets, callback: callback_proc).get(url) }.to raise_error(FaradayDynamicTimeout::ThrottledError)
+
+      expect(request_info).to be_a(FaradayDynamicTimeout::RequestInfo)
+      expect(request_info.env.url.to_s).to eq(url)
+      expect(request_info.duration).to be_a(Float)
+      expect(request_info.timeout).to be_nil
+      expect(request_info.error).to be_a(FaradayDynamicTimeout::ThrottledError)
+      expect(request_info.error.request_count).to eq(buckets.sum { |b| b[:limit] } + 1)
     end
   end
 end

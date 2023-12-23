@@ -3,7 +3,7 @@
 require_relative "../spec_helper"
 
 describe FaradayDynamicTimeout::Counter do
-  let(:counter) { FaradayDynamicTimeout::Counter.new(name: "test", redis: Restrainer.redis, ttl: 0.2) }
+  let(:counter) { FaradayDynamicTimeout::Counter.new(name: "test", redis: REDIS, ttl: 0.2) }
 
   it "tracks and releases a request" do
     expect(counter.value).to eq(0)
