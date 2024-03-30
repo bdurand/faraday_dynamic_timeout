@@ -11,7 +11,7 @@ require_relative "faraday_dynamic_timeout/middleware"
 require_relative "faraday_dynamic_timeout/request_info"
 
 module FaradayDynamicTimeout
-  VERSION = File.read(File.expand_path("../VERSION", __dir__)).strip
+  autoload :VERSION, "faraday_dynamic_timeout/version"
 
   # Error raised when a request is not executed due to too many concurrent requests.
   class ThrottledError < Restrainer::ThrottledError
