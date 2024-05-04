@@ -50,6 +50,8 @@ In this example, the timeout will be set to 8 seconds if there are 5 or fewer re
 
 - `:name` - An optional name for the resource. By default the hostname and port of the request URL will be used to identify the resource. Each resource will report a separate count of concurrent requests and processes. You can group multiple resources from different hosts together with the `:name` option.
 
+- `:before_request` - An optional callback that will be called before each request is made. The callback can be a `Proc` or any object that responds to `call`. It will be called before the request is made with the `Faraday::Env` object and the timeout being used. You can use this to make changes to the request based on the timeout being used. This can be used, for example, to add the timeout to the request payload.
+
 - `:callback` - An optional callback that will be called after each request. The callback can be a `Proc` or any object that responds to `call`. It will be called with a `FaradayDyamicTimeout::RequestInfo` argument. You can use this to log the number of concurrent requests or to report metrics to a monitoring system. This can be very useful for tuning the bucket settings.
 
 ### Capacity Strategy
@@ -80,6 +82,14 @@ For this example, we will configure the `opensearch` gem with this middleware al
 # Set up a redis connection to coordinate counting concurrent requests.
 redis = Redis.new(url: ENV.fetch("REDIS_URL"))
 
+# Set the query timeout to match the request timeout so the search nodes will stop
+# processing if the request times out.
+set_query_timeout = ->(env, timeout) do
+  query_params = (Faraday::Utils.parse_query(env.url.query) || {})
+  query_params["timeout"] = "#{timeout}s"
+  env.url.query = Faraday::Utils.build_query(query_params)
+end
+
 # Set up a statsd client to report metrics with the DataDog extensions.
 statsd = Statsd.new(ENV.fetch("STATSD_HOST"), ENV.fetch("STATSD_PORT"))
 
@@ -102,6 +112,7 @@ client = OpenSearch::Client.new(host: 'localhost', port: '9200') do |faraday|
                   name: "opensearch",
                   redis: redis,
                   filter: ->(env) { env.url.path.end_with?("/_search") },
+                  before_request: set_payload_timeout,
                   callback: metrics_callback
 end
 ```

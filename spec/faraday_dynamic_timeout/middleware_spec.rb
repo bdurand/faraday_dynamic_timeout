@@ -164,6 +164,25 @@ describe FaradayDynamicTimeout::Middleware do
     end
   end
 
+  describe "before_request" do
+    it "calls the before_request proc before making the request" do
+      stub_request(:post, url).with(query: {timeout: "0.3"})
+      before_request_proc = ->(env, timeout) do
+        env.request_headers["X-Test"] = timeout.to_s
+        json = JSON.parse(env.body)
+        json["timeout"] = timeout
+        env.body = JSON.dump(json)
+        query_params = (Faraday::Utils.parse_query(env.url.query) || {})
+        query_params["timeout"] = timeout
+        env.url.query = Faraday::Utils.build_query(query_params)
+      end
+      response = connection(buckets: buckets, before_request: before_request_proc).post(url, JSON.generate(timeout: 5, foo: "bar"))
+      expect(response.env.request_headers["X-Test"]).to eq("0.3")
+      expect(JSON.parse(response.env.request_body)).to eq("timeout" => 0.3, "foo" => "bar")
+      expect(response.env.url.query).to eq("timeout=0.3")
+    end
+  end
+
   describe "callback" do
     it "calls the callback with the request info on success" do
       stub_request(:get, url)
