@@ -27,7 +27,7 @@ module FaradayDynamicTimeout
       count_request(env.url, redis, buckets, callback) do |request_count|
         execute_with_timeout(env.url, buckets, request_count, redis) do |timeout|
           bucket_timeout = timeout
-          set_timeout(env.request, timeout) if timeout
+          set_timeout(env, timeout) if timeout
 
           # Resetting the start time to more accurately reflect the time spent in the request.
           start_time = monotonic_time if callback
@@ -103,11 +103,14 @@ module FaradayDynamicTimeout
       retval
     end
 
-    def set_timeout(request, timeout)
+    def set_timeout(env, timeout)
+      request = env.request
       request.timeout = timeout
       request.open_timeout = nil
       request.write_timeout = nil
       request.read_timeout = nil
+
+      option(:before_request)&.call(env, timeout)
     end
 
     # Track how many requests are currently being executed only if a callback has been configured.
