@@ -86,7 +86,7 @@ redis = Redis.new(url: ENV.fetch("REDIS_URL"))
 # processing if the request times out.
 set_query_timeout = ->(env, timeout) do
   query_params = (Faraday::Utils.parse_query(env.url.query) || {})
-  query_params["timeout"] = "#{timeout}s"
+  query_params["timeout"] = "#{(timeout * 1000).ceil}ms"
   env.url.query = Faraday::Utils.build_query(query_params)
 end
 
