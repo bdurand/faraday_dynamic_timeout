@@ -14,6 +14,8 @@ Gem::Specification.new do |spec|
     .
     Gemfile
     Gemfile.lock
+    Appraisals
+    gemfiles/
     Rakefile
     bin/
     spec/
