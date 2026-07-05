@@ -1,4 +1,4 @@
-# frozen_s
+# frozen_string_literal: true
 
 require_relative "../spec_helper"
 
@@ -60,6 +60,24 @@ describe FaradayDynamicTimeout::Middleware do
       expect(request.timeout).to eq(0.2)
 
       thread.value
+    end
+
+    it "does not treat a throttle error raised from within the request as a full bucket" do
+      error = Restrainer::ThrottledError.new("downstream throttle")
+      stub_request(:get, url).to_raise(error)
+
+      expect { connection(buckets: buckets).get(url) }.to raise_error(Restrainer::ThrottledError, "downstream throttle")
+      expect(a_request(:get, url)).to have_been_made.once
+    end
+
+    it "pads the restrainer timeout so slots are not expired while requests are in flight" do
+      stub_request(:get, url)
+
+      expect(Restrainer).to receive(:new).with(anything, hash_including(timeout: 60)).and_call_original
+      connection(buckets: [{timeout: 0.3, limit: 1}]).get(url)
+
+      expect(Restrainer).to receive(:new).with(anything, hash_including(timeout: 90)).and_call_original
+      connection(buckets: [{timeout: 30, limit: 1}]).get(url)
     end
 
     it "raises an error if all buckets are throttled" do
@@ -151,6 +169,49 @@ describe FaradayDynamicTimeout::Middleware do
     end
   end
 
+  describe "redis outage" do
+    it "makes the request with the highest timeout if the throttle cannot reach redis" do
+      stub_request(:get, url)
+      allow_any_instance_of(Restrainer).to receive(:lock!).and_raise(Redis::CannotConnectError.new("down"))
+
+      response = connection(buckets: buckets).get(url)
+      expect(response.status).to eq(200)
+      expect(response.env.request.timeout).to eq(0.3)
+      expect(a_request(:get, url)).to have_been_made.once
+    end
+
+    it "makes the request and reports a count of 1 if the counter cannot reach redis" do
+      stub_request(:get, url)
+      allow_any_instance_of(FaradayDynamicTimeout::Counter).to receive(:track!).and_raise(Redis::CannotConnectError.new("down"))
+      allow_any_instance_of(FaradayDynamicTimeout::Counter).to receive(:value).and_raise(Redis::CannotConnectError.new("down"))
+
+      request_info = nil
+      response = connection(buckets: buckets, callback: ->(info) { request_info = info }).get(url)
+      expect(response.status).to eq(200)
+      expect(a_request(:get, url)).to have_been_made.once
+      expect(request_info.request_count).to eq(1)
+    end
+
+    it "passes the request through if building the bucket config cannot reach redis" do
+      stub_request(:get, url)
+      buckets_proc = -> { raise Redis::CannotConnectError.new("down") }
+
+      response = connection(buckets: buckets_proc).get(url)
+      expect(response.status).to eq(200)
+      expect(response.env.request.timeout).to eq(default_timeouts[:timeout])
+      expect(a_request(:get, url)).to have_been_made.once
+    end
+
+    it "does not let a redis failure while releasing the slot mask a successful response" do
+      stub_request(:get, url)
+      allow_any_instance_of(Restrainer).to receive(:release!).and_raise(Redis::CannotConnectError.new("down"))
+
+      response = connection(buckets: buckets).get(url)
+      expect(response.status).to eq(200)
+      expect(a_request(:get, url)).to have_been_made.once
+    end
+  end
+
   describe "memoized buckets" do
     it "memoizes the buckets" do
       buckets = [{timeout: 0.2, limit: 1}]
@@ -215,9 +276,15 @@ describe FaradayDynamicTimeout::Middleware do
       expect(request_info.error).to eq(error)
     end
 
+    it "pads the request counter ttl so in flight requests are not expired" do
+      stub_request(:get, url)
+      expect(FaradayDynamicTimeout::Counter).to receive(:new).with(hash_including(ttl: 60)).and_call_original
+      connection(buckets: buckets, callback: ->(info) {}).get(url)
+    end
+
     it "calls the callback with the request info on throttle error" do
       error = Restrainer::ThrottledError.new
-      allow_any_instance_of(Restrainer).to receive(:throttle).and_raise(error)
+      allow_any_instance_of(Restrainer).to receive(:lock!).and_raise(error)
 
       request_info = nil
       callback_proc = ->(info) { request_info = info }

@@ -11,13 +11,15 @@ module FaradayDynamicTimeout
       end
 
       @memoized_buckets = []
-      @mutex = Mutex.new
     end
 
     def call(env)
-      buckets = sorted_buckets
+      # A Redis outage must never take down HTTP traffic, so if building the bucket
+      # configuration touches Redis (e.g. a capacity based strategy) and it is
+      # unavailable, fail open and let the request through with no dynamic timeout.
+      buckets = safe_redis { sorted_buckets }
       redis = redis_client
-      return app.call(env) if !enabled?(env) || buckets.empty? || redis.nil?
+      return app.call(env) if !enabled?(env) || buckets.nil? || buckets.empty? || redis.nil?
 
       error = nil
       bucket_timeout = nil
@@ -53,17 +55,17 @@ module FaradayDynamicTimeout
     def sorted_buckets
       config = option(:buckets)
       config = config.call if config.respond_to?(:call)
-      config = Array(config)
+      # Duplicate the config before comparing so a caller mutating the array or its
+      # hashes cannot change it out from under us mid-request. The memo is published
+      # with a single assignment; concurrent threads may redundantly rebuild it, which
+      # is harmless.
+      config = Array(config).collect(&:dup)
       memoized_config, memoized_buckets = @memoized_buckets
+      return memoized_buckets if config == memoized_config
 
-      if config == memoized_config
-        memoized_buckets
-      else
-        duplicated_config = @mutex.synchronize { config.collect(&:dup) }
-        buckets = Bucket.from_hashes(duplicated_config)
-        @memoized_buckets = [duplicated_config, buckets]
-        buckets
-      end
+      buckets = Bucket.from_hashes(config)
+      @memoized_buckets = [config, buckets]
+      buckets
     end
 
     def enabled?(env)
@@ -84,10 +86,13 @@ module FaradayDynamicTimeout
           retval = yield(bucket.timeout)
           break
         else
-          restrainer = Restrainer.new(restrainer_name(uri, bucket.timeout), limit: bucket.limit, timeout: bucket.timeout, redis: redis)
+          restrainer = Restrainer.new(restrainer_name(uri, bucket.timeout), limit: bucket.limit, timeout: slot_ttl(bucket.timeout), redis: redis)
           begin
-            retval = restrainer.throttle { yield(bucket.timeout) }
-            break
+            # Acquire the slot explicitly rather than using Restrainer#throttle so that a
+            # ThrottledError raised from within the request itself (e.g. from a nested
+            # middleware) is not mistaken for this bucket being full, which would retry
+            # the request on the next bucket and execute it a second time.
+            process_id = restrainer.lock!
           rescue Restrainer::ThrottledError
             total_requests += bucket.limit
             if buckets.empty?
@@ -96,6 +101,21 @@ module FaradayDynamicTimeout
               request_count = [request_count, total_requests + 1].max
               raise ThrottledError.new("Request to #{base_url(uri)} aborted due to #{request_count} concurrent requests", request_count: request_count)
             end
+          rescue Redis::BaseConnectionError
+            # Redis is unavailable, so throttling cannot be enforced. Fail open using the
+            # current (highest available) timeout rather than failing the request.
+            retval = yield(bucket.timeout)
+            break
+          else
+            begin
+              retval = yield(bucket.timeout)
+            ensure
+              # Releasing the slot is best effort; if Redis is unavailable the slot will
+              # expire on its own via the TTL. A cleanup failure must not mask the result
+              # of a request that has already been made.
+              safe_redis { restrainer.release!(process_id) }
+            end
+            break
           end
         end
       end
@@ -113,18 +133,39 @@ module FaradayDynamicTimeout
       option(:before_request)&.call(env, timeout)
     end
 
+    # The TTL used to clean up orphaned slot and counter entries in Redis. The bucket
+    # timeout only bounds each phase of the request (open/read/write), not its total
+    # wall time, so the TTL is padded to avoid expiring entries for requests that are
+    # still legitimately in flight.
+    def slot_ttl(timeout)
+      [timeout * 3, 60].max
+    end
+
     # Track how many requests are currently being executed only if a callback has been configured.
+    #
+    # Each Redis operation is guarded so that a Redis outage degrades to a pass through
+    # (reporting a request count of 1) rather than blocking the request. The counter entry
+    # is released on the way out, but only when it was successfully added.
     def count_request(uri, redis, buckets, callback)
-      if callback
-        ttl = buckets.last.timeout
-        ttl = 60 if ttl <= 0
-        request_counter = Counter.new(name: request_counter_name(uri), redis: redis, ttl: ttl)
-        request_counter.execute do
-          yield request_counter.value
-        end
-      else
-        yield 1
+      return yield(1) unless callback
+
+      ttl = slot_ttl(buckets.last.timeout)
+      request_counter = Counter.new(name: request_counter_name(uri), redis: redis, ttl: ttl)
+      id = safe_redis { request_counter.track! }
+      begin
+        yield(safe_redis { request_counter.value } || 1)
+      ensure
+        safe_redis { request_counter.release!(id) } if id
       end
+    end
+
+    # Run a block that talks to Redis, returning nil instead of raising if Redis is
+    # unavailable. Used to keep a Redis outage from taking down HTTP traffic; only
+    # connection level failures are swallowed so genuine programming errors still surface.
+    def safe_redis
+      yield
+    rescue Redis::BaseConnectionError
+      nil
     end
 
     def request_counter_name(uri)
