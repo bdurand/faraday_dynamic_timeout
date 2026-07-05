@@ -101,7 +101,7 @@ module FaradayDynamicTimeout
               request_count = [request_count, total_requests + 1].max
               raise ThrottledError.new("Request to #{base_url(uri)} aborted due to #{request_count} concurrent requests", request_count: request_count)
             end
-          rescue Redis::BaseConnectionError
+          rescue Redis::BaseError
             # Redis is unavailable, so throttling cannot be enforced. Fail open using the
             # current (highest available) timeout rather than failing the request.
             retval = yield(bucket.timeout)
@@ -159,12 +159,12 @@ module FaradayDynamicTimeout
       end
     end
 
-    # Run a block that talks to Redis, returning nil instead of raising if Redis is
-    # unavailable. Used to keep a Redis outage from taking down HTTP traffic; only
-    # connection level failures are swallowed so genuine programming errors still surface.
+    # Run a block that talks to Redis, returning nil instead of raising if the Redis
+    # call fails for any reason. Used to keep Redis problems from taking down HTTP
+    # traffic.
     def safe_redis
       yield
-    rescue Redis::BaseConnectionError
+    rescue Redis::BaseError
       nil
     end
 

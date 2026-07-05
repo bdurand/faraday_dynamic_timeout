@@ -180,6 +180,16 @@ describe FaradayDynamicTimeout::Middleware do
       expect(a_request(:get, url)).to have_been_made.once
     end
 
+    it "fails open on a redis command error, not just connection errors" do
+      stub_request(:get, url)
+      allow_any_instance_of(Restrainer).to receive(:lock!).and_raise(Redis::CommandError.new("OOM"))
+
+      response = connection(buckets: buckets).get(url)
+      expect(response.status).to eq(200)
+      expect(response.env.request.timeout).to eq(0.3)
+      expect(a_request(:get, url)).to have_been_made.once
+    end
+
     it "makes the request and reports a count of 1 if the counter cannot reach redis" do
       stub_request(:get, url)
       allow_any_instance_of(FaradayDynamicTimeout::Counter).to receive(:track!).and_raise(Redis::CannotConnectError.new("down"))

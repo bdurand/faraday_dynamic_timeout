@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The middleware now fails open when Redis is unavailable: instead of raising and taking down HTTP traffic, the request is made using the highest configured timeout without throttling.
+- The middleware now fails open on any Redis error: instead of raising and taking down HTTP traffic, the request is made using the highest configured timeout without throttling.
 
 ### Fixed
 

@@ -70,7 +70,7 @@ The `:callback` option receives a `FaradayDynamicTimeout::RequestInfo` object wi
 
 ### Redis availability
 
-The middleware depends on Redis to coordinate counts across processes, but a Redis outage will not take down your HTTP traffic. If Redis cannot be reached, the middleware fails open: the request is made using the highest configured timeout without throttling, and the request count reported to the `:callback` will be `1`. Cleanup of Redis bookkeeping is best effort and any leftover entries expire automatically.
+The middleware depends on Redis to coordinate counts across processes, but Redis problems will not take down your HTTP traffic. If any Redis call fails (a connection failure, a timeout, a command error, etc.), the middleware fails open: the request is made using the highest configured timeout without throttling, and the request count reported to the `:callback` will be `1`. Cleanup of Redis bookkeeping is best effort and any leftover entries expire automatically.
 
 ### Limitations
 
