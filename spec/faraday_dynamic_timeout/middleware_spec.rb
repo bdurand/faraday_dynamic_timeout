@@ -243,7 +243,7 @@ describe FaradayDynamicTimeout::Middleware do
         json = JSON.parse(env.body)
         json["timeout"] = timeout
         env.body = JSON.dump(json)
-        query_params = (Faraday::Utils.parse_query(env.url.query) || {})
+        query_params = Faraday::Utils.parse_query(env.url.query) || {}
         query_params["timeout"] = timeout
         env.url.query = Faraday::Utils.build_query(query_params)
       end
