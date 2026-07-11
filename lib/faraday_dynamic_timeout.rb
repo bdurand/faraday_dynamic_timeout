@@ -2,6 +2,7 @@
 
 require "faraday"
 require "restrainer"
+require "securerandom"
 require "socket"
 
 require_relative "faraday_dynamic_timeout/bucket"

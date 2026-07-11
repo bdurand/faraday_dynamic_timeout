@@ -52,11 +52,33 @@ In this example, the timeout will be set to 8 seconds if there are 5 or fewer re
 
 - `:before_request` - An optional callback that will be called before each request is made. The callback can be a `Proc` or any object that responds to `call`. It will be called before the request is made with the `Faraday::Env` object and the timeout being used. You can use this to make changes to the request based on the timeout being used. This can be used, for example, to add the timeout to the request payload.
 
-- `:callback` - An optional callback that will be called after each request. The callback can be a `Proc` or any object that responds to `call`. It will be called with a `FaradayDyamicTimeout::RequestInfo` argument. You can use this to log the number of concurrent requests or to report metrics to a monitoring system. This can be very useful for tuning the bucket settings.
+- `:filter` - An optional callback that will be called before each request with the `Faraday::Env` object. The callback can be a `Proc` or any object that responds to `call`. If it returns a falsey value, the middleware will pass the request through without applying any timeout or throttling. You can use this to limit the middleware to specific requests (for example, only search requests).
+
+- `:callback` - An optional callback that will be called after each request. The callback can be a `Proc` or any object that responds to `call`. It will be called with a `FaradayDynamicTimeout::RequestInfo` argument. You can use this to log the number of concurrent requests or to report metrics to a monitoring system. This can be very useful for tuning the bucket settings. Note that the callback runs inline before the response is returned, so any exception it raises will propagate out of the request and can mask the original result. If your callback might raise (for example, when a metrics backend is unavailable), rescue inside the callback itself.
+
+### The RequestInfo object
+
+The `:callback` option receives a `FaradayDynamicTimeout::RequestInfo` object with details about the completed request:
+
+- `duration` - The time spent making the request in seconds.
+- `timeout` - The timeout that was applied, or `nil` if none was applied (for example when the request was throttled before it was made).
+- `request_count` - The number of concurrent requests observed for the resource.
+- `error` - The exception raised by the request, if any.
+- `throttled?` - True if the request was rejected because all buckets were full.
+- `timed_out?` - True if the request failed with a `Faraday::TimeoutError`. This reflects the read/request timeout that this middleware sets. Connection-level timeouts are reported by adapters as `Faraday::ConnectionFailed` on some adapters rather than `Faraday::TimeoutError`, so they are not counted as timeouts here; inspect `error` directly if you need to distinguish them.
+- `error?` - True if the request raised any error.
+
+### Redis availability
+
+The middleware depends on Redis to coordinate counts across processes, but Redis problems will not take down your HTTP traffic. If any Redis call fails (a connection failure, a timeout, a command error, etc.), the middleware fails open: the request is made using the highest configured timeout without throttling, and the request count reported to the `:callback` will be `1`. Cleanup of Redis bookkeeping is best effort and any leftover entries expire automatically.
+
+### Limitations
+
+- **Streaming and parallel adapters.** A request occupies its bucket slot only for the duration of the underlying `app.call`. If you use a streaming response where the body is consumed after the middleware returns, or a Faraday adapter running requests in parallel, the concurrency accounting will not reflect the time spent streaming or the true number of in-flight requests.
 
 ### Capacity Strategy
 
-You can use the `FaraadyDynamicTimeout::CapacityStrategy` class to build a bucket configuration based on the current capacity of your application rather than hard coding bucket limits. This can be useful if you have a system that can scale up and down based on load. It works by estimating the total number of threads available in your application and uses that value to calculate bucket limits based on a percentage provided by the `:capacity` option.
+You can use the `FaradayDynamicTimeout::CapacityStrategy` class to build a bucket configuration based on the current capacity of your application rather than hard coding bucket limits. This can be useful if you have a system that can scale up and down based on load. It works by estimating the total number of threads available in your application and uses that value to calculate bucket limits based on a percentage provided by the `:capacity` option.
 
 ```ruby
 capacity = FaradayDynamicTimeout::CapacityStrategy.new(
@@ -105,14 +127,14 @@ end
 client = OpenSearch::Client.new(host: 'localhost', port: '9200') do |faraday|
   faraday.request :dynamic_timeout,
                   buckets: [
-                    {timeout: 8, max_requests: 5},
-                    {timeout: 1, max_requests: 10},
-                    {timeout: 0.5, max_requests: 20}
+                    {timeout: 8, limit: 5},
+                    {timeout: 1, limit: 10},
+                    {timeout: 0.5, limit: 20}
                   ],
                   name: "opensearch",
                   redis: redis,
                   filter: ->(env) { env.url.path.end_with?("/_search") },
-                  before_request: set_payload_timeout,
+                  before_request: set_query_timeout,
                   callback: metrics_callback
 end
 ```
