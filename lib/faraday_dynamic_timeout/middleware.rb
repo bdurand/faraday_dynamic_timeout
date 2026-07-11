@@ -55,14 +55,15 @@ module FaradayDynamicTimeout
     def sorted_buckets
       config = option(:buckets)
       config = config.call if config.respond_to?(:call)
-      # Duplicate the config before comparing so a caller mutating the array or its
-      # hashes cannot change it out from under us mid-request. The memo is published
-      # with a single assignment; concurrent threads may redundantly rebuild it, which
-      # is harmless.
-      config = Array(config).collect(&:dup)
+      config = Array(config)
       memoized_config, memoized_buckets = @memoized_buckets
       return memoized_buckets if config == memoized_config
 
+      # Duplicate the config before storing it so a caller mutating the array or its
+      # hashes cannot change the memoized snapshot out from under us. The memo is
+      # published with a single assignment; concurrent threads may redundantly rebuild
+      # it, which is harmless.
+      config = config.collect(&:dup)
       buckets = Bucket.from_hashes(config)
       @memoized_buckets = [config, buckets]
       buckets
@@ -149,6 +150,11 @@ module FaradayDynamicTimeout
     def count_request(uri, redis, buckets, callback)
       return yield(1) unless callback
 
+      # The counter entry is added before a bucket has been selected, so the TTL must
+      # conservatively cover the highest timeout (the last bucket); a shorter TTL could
+      # expire entries for requests still legitimately in flight. The TTL only comes
+      # into play for orphaned entries since entries are normally removed when the
+      # request finishes.
       ttl = slot_ttl(buckets.last.timeout)
       request_counter = Counter.new(name: request_counter_name(uri), redis: redis, ttl: ttl)
       id = safe_redis { request_counter.track! }
