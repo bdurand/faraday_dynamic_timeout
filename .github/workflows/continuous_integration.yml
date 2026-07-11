@@ -7,6 +7,9 @@ on:
     tags:
       - v*
   pull_request:
+    branches-ignore:
+      - actions-*
+  workflow_dispatch:
 
 jobs:
   specs:
