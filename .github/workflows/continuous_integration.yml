@@ -7,11 +7,7 @@ on:
     tags:
       - v*
   pull_request:
-env:
-  BUNDLE_CLEAN: "true"
-  BUNDLE_PATH: vendor/bundle
-  BUNDLE_JOBS: 3
-  BUNDLE_RETRY: 3
+
 jobs:
   specs:
     name: run tests
@@ -32,31 +28,19 @@ jobs:
         include:
           - ruby: "ruby"
             standardrb: true
+            yard: true
           - ruby: "3.2"
             appraisal: faraday_2
-          - ruby: "2.5"
+          - ruby: "2.6"
             appraisal: faraday_1
     steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Set up Ruby ${{ matrix.ruby }}
-        uses: ruby/setup-ruby@v1
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Ruby CI
+        uses: bdurand/github-actions/ruby-ci@v1.0.1
         with:
-          ruby-version: "${{ matrix.ruby }}"
-      - name: Setup bundler
-        if: matrix.bundler != ''
-        run: |
-          gem uninstall bundler --all
-          gem install bundler --no-document --version ${{ matrix.bundler }}
-      - name: Set Appraisal bundle
-        if: matrix.appraisal != ''
-        run: |
-          echo "using gemfile gemfiles/${{ matrix.appraisal }}.gemfile"
-          bundle config set gemfile "gemfiles/${{ matrix.appraisal }}.gemfile"
-      - name: Install gems
-        run: bundle
-      - name: Run specs
-        run: bundle exec rake spec
-      - name: Run standardrb
-        if: matrix.standardrb == true
-        run: bundle exec rake standard
+          ruby: ${{ matrix.ruby }}
+          appraisal: ${{ matrix.appraisal }}
+          bundler: ${{ matrix.bundler }}
+          standardrb: ${{ matrix.standardrb }}
+          yard: ${{ matrix.yard }}

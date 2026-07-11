@@ -42,7 +42,7 @@ describe FaradayDynamicTimeout::Counter do
   end
 
   it "cleans up expired requests" do
-    id_1 = counter.track!
+    counter.track!
     expect(counter.value).to eq(1)
     sleep(0.1)
     id_2 = counter.track!
