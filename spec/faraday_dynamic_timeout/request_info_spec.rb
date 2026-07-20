@@ -1,8 +1,8 @@
-# frozen_s
+# frozen_string_literal: true
 
-require_relative "../spec_helper"
+require "spec_helper"
 
-describe FaradayDynamicTimeout::RequestInfo do
+RSpec.describe FaradayDynamicTimeout::RequestInfo do
   let(:uri) { URI("https://example.com") }
   let(:env) { double(Faraday::Env, method: :get, url: uri, status: 200) }
   let(:error) { nil }

@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require_relative "../spec_helper"
+require "spec_helper"
 
-describe FaradayDynamicTimeout::Middleware do
+RSpec.describe FaradayDynamicTimeout::Middleware do
   let(:default_timeouts) do
     {
       timeout: 5,
