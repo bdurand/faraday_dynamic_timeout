@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require_relative "../spec_helper"
+require "spec_helper"
 
-describe FaradayDynamicTimeout::Bucket do
+RSpec.describe FaradayDynamicTimeout::Bucket do
   describe "no_limit?" do
     it "has a limit if the limit is not negative" do
       bucket = FaradayDynamicTimeout::Bucket.new(timeout: 1, limit: 1)

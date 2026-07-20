@@ -1,8 +1,8 @@
-# frozen_s
+# frozen_string_literal: true
 
-require_relative "../spec_helper"
+require "spec_helper"
 
-describe FaradayDynamicTimeout::Counter do
+RSpec.describe FaradayDynamicTimeout::Counter do
   let(:counter) { FaradayDynamicTimeout::Counter.new(name: "test", redis: REDIS, ttl: 0.2) }
 
   it "tracks and releases a request" do

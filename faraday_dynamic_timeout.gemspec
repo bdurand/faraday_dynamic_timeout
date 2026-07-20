@@ -29,7 +29,5 @@ Gem::Specification.new do |spec|
   spec.add_dependency "faraday"
   spec.add_dependency "restrainer", ">= 1.1.3"
 
-  spec.add_development_dependency "bundler"
-
   spec.required_ruby_version = ">= 2.6"
 end

@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require_relative "../spec_helper"
+require "spec_helper"
 
-describe FaradayDynamicTimeout::CapacityStrategy do
+RSpec.describe FaradayDynamicTimeout::CapacityStrategy do
   it "calculates the capacity based on the number of processes counted" do
     strategy = FaradayDynamicTimeout::CapacityStrategy.new(
       buckets: [{timeout: 1, capacity: 0.5}],
